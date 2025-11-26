@@ -119,3 +119,5 @@ platforms:
     name: "知乎"
   - id: "wechat"
     name: "微信"
+  - id: "youtube"
+    name: "YouTube"
