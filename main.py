@@ -55,6 +55,61 @@ SMTP_CONFIGS = {
 }
 
 
+def fetch_coc_layouts() -> List[Dict[str, str]]:
+    """搜索最新部落冲突 TH17 阵型，返回链接、标题和描述列表"""
+    # 选项1: 使用 Google 搜索（广度优先，需代理避免限流）
+    search_query = "部落冲突 TH17 阵型 2025 国服 最新布局 site:bilibili.com OR site:youtube.com OR site:coc.heiyu100.cn OR site:blueprintcoc.com"
+    url = f"https://www.google.com/search?q={search_query}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        layouts = []
+        for result in soup.select('div.g'):
+            title_elem = result.select_one('h3')
+            link_elem = result.select_one('a')
+            snippet_elem = result.select_one('.VwiC3b')
+            if title_elem and link_elem and 'TH17' in title_elem.text:
+                layouts.append({
+                    'title': title_elem.text,
+                    'link': link_elem['href'],
+                    'description': snippet_elem.text if snippet_elem else ''
+                })
+        layouts = layouts[:10]  # 限制前 10 个结果
+    except Exception as e:
+        print(f"Google 搜索失败: {e}，切换到直接爬取黑羽网络")
+        layouts = fetch_from_heiyu()  # 备选方案
+
+    return layouts
+
+
+def fetch_from_heiyu() -> List[Dict[str, str]]:
+    """直接爬取黑羽网络 TH17 阵型页（备选方案）"""
+    url = "https://coc.heiyu100.cn/en/?lx=1&jidi=17%25E6%259C%25AC&page=1&dengji="
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        layouts = []
+        for item in soup.select('.layout-item'):  # 根据站点 HTML 调整 selector
+            title_elem = item.select_one('.title')
+            link_elem = item.select_one('a')
+            if title_elem and link_elem:
+                layouts.append({
+                    'title': title_elem.text.strip(),
+                    'link': f"https://coc.heiyu100.cn{link_elem['href']}",
+                    'description': ''  # 可添加描述提取
+                })
+        return layouts[:10]
+    except Exception as e:
+        print(f"黑羽网络爬取失败: {e}")
+        return []
+
 # === 配置管理 ===
 def load_config():
     """加载配置文件"""
@@ -477,52 +532,68 @@ class DataFetcher:
         else:
             id_value = id_info
             alias = id_value
-
-        url = f"https://newsnow.busiyi.world/api/s?id={id_value}&latest"
-
-        proxies = None
-        if self.proxy_url:
-            proxies = {"http": self.proxy_url, "https": self.proxy_url}
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Connection": "keep-alive",
-            "Cache-Control": "no-cache",
-        }
-
-        retries = 0
-        while retries <= max_retries:
-            try:
-                response = requests.get(
-                    url, proxies=proxies, headers=headers, timeout=10
-                )
-                response.raise_for_status()
-
-                data_text = response.text
-                data_json = json.loads(data_text)
-
-                status = data_json.get("status", "未知")
-                if status not in ["success", "cache"]:
-                    raise ValueError(f"响应状态异常: {status}")
-
-                status_info = "最新数据" if status == "success" else "缓存数据"
-                print(f"获取 {id_value} 成功（{status_info}）")
-                return data_text, id_value, alias
-
-            except Exception as e:
-                retries += 1
-                if retries <= max_retries:
-                    base_wait = random.uniform(min_retry_wait, max_retry_wait)
-                    additional_wait = (retries - 1) * random.uniform(1, 2)
-                    wait_time = base_wait + additional_wait
-                    print(f"请求 {id_value} 失败: {e}. {wait_time:.2f}秒后重试...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"请求 {id_value} 失败: {e}")
-                    return None, id_value, alias
-        return None, id_value, alias
+        # 调用自定义搜索函数
+        layouts = fetch_coc_layouts()
+        if not layouts:
+            print(f"阵型搜索失败: {id_value}")
+            return None, id_value, alias
+        # 模拟原 JSON 格式：{"status": "success", "items": [{"title": "", "url": ""}]}
+        items = []
+        for index, layout in enumerate(layouts, 1):
+            items.append({
+                "title": layout['title'],
+                "url": layout['link'],
+                "mobileUrl": layout['link'],  # 假设相同
+            })
+        data_json = {"status": "success", "items": items}
+        data_text = json.dumps(data_json, ensure_ascii=False)
+        print(f"阵型搜索成功: {len(layouts)} 个结果")
+        return data_text, id_value, alias
+        # url = f"https://newsnow.busiyi.world/api/s?id={id_value}&latest"
+        #
+        # proxies = None
+        # if self.proxy_url:
+        #     proxies = {"http": self.proxy_url, "https": self.proxy_url}
+        #
+        # headers = {
+        #     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        #     "Accept": "application/json, text/plain, */*",
+        #     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        #     "Connection": "keep-alive",
+        #     "Cache-Control": "no-cache",
+        # }
+        #
+        # retries = 0
+        # while retries <= max_retries:
+        #     try:
+        #         response = requests.get(
+        #             url, proxies=proxies, headers=headers, timeout=10
+        #         )
+        #         response.raise_for_status()
+        #
+        #         data_text = response.text
+        #         data_json = json.loads(data_text)
+        #
+        #         status = data_json.get("status", "未知")
+        #         if status not in ["success", "cache"]:
+        #             raise ValueError(f"响应状态异常: {status}")
+        #
+        #         status_info = "最新数据" if status == "success" else "缓存数据"
+        #         print(f"获取 {id_value} 成功（{status_info}）")
+        #         return data_text, id_value, alias
+        #
+        #     except Exception as e:
+        #         retries += 1
+        #         if retries <= max_retries:
+        #             base_wait = random.uniform(min_retry_wait, max_retry_wait)
+        #             additional_wait = (retries - 1) * random.uniform(1, 2)
+        #             wait_time = base_wait + additional_wait
+        #             print(f"请求 {id_value} 失败: {e}. {wait_time:.2f}秒后重试...")
+        #             time.sleep(wait_time)
+        #         else:
+        #             print(f"请求 {id_value} 失败: {e}")
+        #             return None, id_value, alias
+        # return None, id_value, alias
 
     def crawl_websites(
         self,
@@ -533,51 +604,76 @@ class DataFetcher:
         results = {}
         id_to_name = {}
         failed_ids = []
-
-        for i, id_info in enumerate(ids_list):
-            if isinstance(id_info, tuple):
-                id_value, name = id_info
-            else:
-                id_value = id_info
-                name = id_value
-
-            id_to_name[id_value] = name
-            response, _, _ = self.fetch_data(id_info)
-
-            if response:
-                try:
-                    data = json.loads(response)
-                    results[id_value] = {}
-                    for index, item in enumerate(data.get("items", []), 1):
-                        title = item.get("title")
-                        # 跳过无效标题（None、float、空字符串）
-                        if title is None or isinstance(title, float) or not str(title).strip():
-                            continue
-                        title = str(title).strip()
-                        url = item.get("url", "")
-                        mobile_url = item.get("mobileUrl", "")
-
-                        if title in results[id_value]:
-                            results[id_value][title]["ranks"].append(index)
-                        else:
-                            results[id_value][title] = {
-                                "ranks": [index],
-                                "url": url,
-                                "mobileUrl": mobile_url,
-                            }
-                except json.JSONDecodeError:
-                    print(f"解析 {id_value} 响应失败")
-                    failed_ids.append(id_value)
-                except Exception as e:
-                    print(f"处理 {id_value} 数据出错: {e}")
-                    failed_ids.append(id_value)
-            else:
+        # 由于是自定义搜索，只需调用一次（忽略多 id）
+        id_value = "coc_th18"  # 虚拟平台 ID
+        alias = "部落冲突 TH18 阵型"
+        id_to_name[id_value] = alias
+        response, _, _ = self.fetch_data((id_value, alias))
+        if response:
+            try:
+                data = json.loads(response)
+                results[id_value] = {}
+                for index, item in enumerate(data.get("items", []), 1):
+                    title = item.get("title")
+                    if not title or not str(title).strip():
+                        continue
+                    title = str(title).strip()
+                    url = item.get("url", "")
+                    mobile_url = item.get("mobileUrl", "")
+                    results[id_value][title] = {
+                        "ranks": [index],  # 使用搜索排名作为 ranks
+                        "url": url,
+                        "mobileUrl": mobile_url,
+                    }
+            except Exception as e:
+                print(f"处理阵型数据出错: {e}")
                 failed_ids.append(id_value)
-
-            if i < len(ids_list) - 1:
-                actual_interval = request_interval + random.randint(-10, 20)
-                actual_interval = max(50, actual_interval)
-                time.sleep(actual_interval / 1000)
+        else:
+            failed_ids.append(id_value)
+        # for i, id_info in enumerate(ids_list):
+        #     if isinstance(id_info, tuple):
+        #         id_value, name = id_info
+        #     else:
+        #         id_value = id_info
+        #         name = id_value
+        #
+        #     id_to_name[id_value] = name
+        #     response, _, _ = self.fetch_data(id_info)
+        #
+        #     if response:
+        #         try:
+        #             data = json.loads(response)
+        #             results[id_value] = {}
+        #             for index, item in enumerate(data.get("items", []), 1):
+        #                 title = item.get("title")
+        #                 # 跳过无效标题（None、float、空字符串）
+        #                 if title is None or isinstance(title, float) or not str(title).strip():
+        #                     continue
+        #                 title = str(title).strip()
+        #                 url = item.get("url", "")
+        #                 mobile_url = item.get("mobileUrl", "")
+        #
+        #                 if title in results[id_value]:
+        #                     results[id_value][title]["ranks"].append(index)
+        #                 else:
+        #                     results[id_value][title] = {
+        #                         "ranks": [index],
+        #                         "url": url,
+        #                         "mobileUrl": mobile_url,
+        #                     }
+        #         except json.JSONDecodeError:
+        #             print(f"解析 {id_value} 响应失败")
+        #             failed_ids.append(id_value)
+        #         except Exception as e:
+        #             print(f"处理 {id_value} 数据出错: {e}")
+        #             failed_ids.append(id_value)
+        #     else:
+        #         failed_ids.append(id_value)
+        #
+        #     if i < len(ids_list) - 1:
+        #         actual_interval = request_interval + random.randint(-10, 20)
+        #         actual_interval = max(50, actual_interval)
+        #         time.sleep(actual_interval / 1000)
 
         print(f"成功: {list(results.keys())}, 失败: {failed_ids}")
         return results, id_to_name, failed_ids
