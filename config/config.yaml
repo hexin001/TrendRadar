@@ -117,3 +117,5 @@ platforms:
     name: "抖音"
   - id: "zhihu"
     name: "知乎"
+  - id: "wechat"
+    name: "微信"
