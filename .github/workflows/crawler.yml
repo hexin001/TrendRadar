@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # 手动安装方式：补充 serpapi
-          pip install beautifulsoup4 requests pytz pyyaml serpapi
+#          pip install beautifulsoup4 requests pytz pyyaml serpapi
 
 
       - name: Verify required files

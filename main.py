@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from bs4 import BeautifulSoup
 # from serpapi import GoogleSearch  # 新导入
-from serpapi.google_search import GoogleSearch
+from google_search_results import GoogleSearch
 
 import pytz
 import requests
