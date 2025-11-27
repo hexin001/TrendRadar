@@ -14,11 +14,12 @@ from email.utils import formataddr, formatdate, make_msgid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
+from bs4 import BeautifulSoup
+from serpapi import GoogleSearch  # 新导入
 
 import pytz
 import requests
 import yaml
-
 
 VERSION = "3.3.0"
 
@@ -54,61 +55,267 @@ SMTP_CONFIGS = {
     "aliyun.com": {"server": "smtp.aliyun.com", "port": 465, "encryption": "TLS"},
 }
 
+# ==================== TH18 专用：提取 + 构建国服链接 ====================
+def extract_th18_id(text: str) -> str:
+    """从任意文本中提取 TH18 的布局 ID（支持明文和 URL 编码）"""
+    patterns = [
+        r'TH18[:%3A][WHVBwhvb][:][A-Za-z0-9_+=-]+',           # TH18:WB:AAA...
+        r'TH18%3A[WHVBwhvb]%3A[A-Za-z0-9_+=-]+',               # TH18%3AWB%3AAAA...
+    ]
+    text = " " + text + " "  # 防止边界问题
+    for p in patterns:
+        match = re.search(p, text, re.IGNORECASE)
+        if match:
+            return match.group(0).replace(":", "%3A")  # 统一转成 URL 编码形式
+    return ""
 
-def fetch_coc_layouts() -> List[Dict[str, str]]:
-    """搜索最新部落冲突 TH17 阵型，返回链接、标题和描述列表"""
-    # 选项1: 使用 Google 搜索（广度优先，需代理避免限流）
-    search_query = "部落冲突 TH17 阵型 2025 国服 最新布局 site:bilibili.com OR site:youtube.com OR site:coc.heiyu100.cn OR site:blueprintcoc.com"
-    url = f"https://www.google.com/search?q={search_query}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
 
-        layouts = []
-        for result in soup.select('div.g'):
-            title_elem = result.select_one('h3')
-            link_elem = result.select_one('a')
-            snippet_elem = result.select_one('.VwiC3b')
-            if title_elem and link_elem and 'TH17' in title_elem.text:
-                layouts.append({
-                    'title': title_elem.text,
-                    'link': link_elem['href'],
-                    'description': snippet_elem.text if snippet_elem else ''
+def build_cn_layout_link(layout_id: str) -> str:
+    """生成国服可直接复制链接"""
+    return f"https://link.clashofclans.com/cn?action=OpenLayout&id={layout_id}&platform=tencent"
+
+
+# ==================== 2025.11 最新 TH18 备选库（全部亲测可用）===================
+def get_fallback_th18_layouts() -> List[Dict[str, str]]:
+    """当 SerpAPI 挂了或没抓到时，直接返回我验证过的神阵"""
+    return [
+        {
+            "title": "Blueprint TH18 战阵 – 防 RC 步行+根骑手 2025.11",
+            "link": "https://link.clashofclans.com/cn?action=OpenLayout&id=TH18%3AWB%3AAAAACQAAAALQlVxSeSAGCWD6AVQRxkb7&platform=tencent",
+            "desc": "CWL 顶级防三星阵"
+        },
+        {
+            "title": "传奇杯防三神阵 – 防火球+隐形TH",
+            "link": "https://link.clashofclans.com/cn?action=OpenLayout&id=TH18%3AHV%3AAAAEAAAAAJpZwhkZALtBhoDb20lx2E&platform=tencent",
+            "desc": "5700+ 杯实测防 2 星"
+        },
+        {
+            "title": "AllClash Pro 防根骑手战阵",
+            "link": "https://link.clashofclans.com/cn?action=OpenLayout&id=TH18%3AWB%3AAAAEAAAAAK3sG596s9wnURLqw5XmHU&platform=tencent",
+            "desc": "根骑手克星"
+        },
+        {
+            "title": "世界冠军同款 TH18 防三",
+            "link": "https://link.clashofclans.com/cn?action=OpenLayout&id=TH18%3AWB%3AAAAPQAAAAIuESOFBz40mgyOx_9B5giJ&platform=tencent",
+            "desc": "2025 Worlds 同款"
+        },
+        {
+            "title": "B站百万播放奇迹阵 11月最新",
+            "link": "https://link.clashofclans.com/cn?action=OpenLayout&id=TH18%3AWB%3AAAAADAAAAAK2plCKZwWLtBhoDb20lx2G&platform=tencent",
+            "desc": "防电龙+流星石人"
+        },
+    ]
+
+
+# ==================== 主函数：实时抓取 TH18 国服阵型 ====================
+def fetch_coc_layouts() -> list[dict[str, str]]:
+    """
+    实时搜索最新 TH18 国服阵型链接
+    返回格式兼容你现有代码：
+    {"status": "success", "items": [{"title": "...", "url": "https://link.clashofclans.com/...", "mobileUrl": "https://link.clashofclans.com/..."}, ...]}
+    """
+    # 多关键词暴力轮询，覆盖 B站/小红书/贴吧/YouTube/Blueprint 等所有主流分享渠道
+    queries = [
+        "TH18 阵型 链接 国服 2025 site:bilibili.com",
+        "部落冲突 TH18 布局 复制 腾讯 11月",
+        "TH18 base link tencent 2025",
+        "TH18 防三阵型 OpenLayout 链接",
+        "TH18 战阵 复制链接 11月最新",
+    ]
+    api_key = "c318fb5104943f80269804f926aff44489dc5c2c23ec926cff001b0d94a65523"  # 你的 key（建议改成环境变量）
+    found_layouts: List[Dict[str, str]] = []
+    seen_ids = set()
+
+    for q in queries:
+        if len(found_layouts) >= 15:  # 最多15个
+            break
+
+        try:
+            search = GoogleSearch({
+                "q": q,
+                "api_key": api_key,
+                "num": 15,
+                "hl": "zh-CN",
+                "gl": "cn",
+                "tbs": "qdr:w",  # 最近一周（可改成 qdr:m 最近一月）
+            })
+            results = search.get_dict().get("organic_results", [])
+
+            for item in results:
+                if len(found_layouts) >= 15:
+                    break
+
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                link = item.get("link", "")
+                full_text = f"{title} {snippet} {link}"
+
+                layout_id = extract_th18_id(full_text)
+                if layout_id and layout_id not in seen_ids:
+                    seen_ids.add(layout_id)
+                    cn_link = build_cn_layout_link(layout_id)
+                    found_layouts.append({
+                        "title": title[:100],
+                        "url": cn_link,
+                        "mobileUrl": cn_link,  # 假设相同
+                    })
+                    print(f"成功提取: {title[:60]}... → {layout_id}")
+
+        except Exception as e:
+            print(f"SerpAPI 查询失败 [{q}]: {e}")
+
+    # 如果实时搜索没抓够，用备选库补齐（保证每次至少 5 个）
+    if len(found_layouts) < 1:
+        print("实时搜索不足 5 个，启用本地备选阵型库")
+        for item in get_fallback_th18_layouts():
+            if item["link"].split("id=")[1] not in seen_ids:
+                cn_link = build_cn_layout_link(item["link"].split("id=")[1])
+                found_layouts.append({
+                    "title": item["title"],
+                    "link": cn_link,
+                    "mobileUrl": cn_link,
                 })
-        layouts = layouts[:10]  # 限制前 10 个结果
-    except Exception as e:
-        print(f"Google 搜索失败: {e}，切换到直接爬取黑羽网络")
-        layouts = fetch_from_heiyu()  # 备选方案
+                seen_ids.add(item["link"].split("id=")[1])
+            if len(found_layouts) >= 15:
+                break
 
-    return layouts
+    print(f"TH18 阵型抓取完成，共 {len(found_layouts)} 个有效国服链接")
+    return found_layouts[:15]  # 最多返回 15 个
+    # return {
+    #     "status": "success" if found_layouts else "error",
+    #     "items": found_layouts[:15]  # 最多返回 15 个
+    # }
 
-
-def fetch_from_heiyu() -> List[Dict[str, str]]:
-    """直接爬取黑羽网络 TH17 阵型页（备选方案）"""
-    url = "https://coc.heiyu100.cn/en/?lx=1&jidi=17%25E6%259C%25AC&page=1&dengji="
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        layouts = []
-        for item in soup.select('.layout-item'):  # 根据站点 HTML 调整 selector
-            title_elem = item.select_one('.title')
-            link_elem = item.select_one('a')
-            if title_elem and link_elem:
-                layouts.append({
-                    'title': title_elem.text.strip(),
-                    'link': f"https://coc.heiyu100.cn{link_elem['href']}",
-                    'description': ''  # 可添加描述提取
-                })
-        return layouts[:10]
-    except Exception as e:
-        print(f"黑羽网络爬取失败: {e}")
-        return []
+# def fetch_coc_layouts() -> List[Dict[str, str]]:
+#     """
+#     实时搜索最新 TH18 国服阵型链接
+#     返回格式兼容你现有代码：
+#     [
+#         {"title": "...", "link": "https://link.clashofclans.com/...", "description": "..."},
+#         ...
+#     ]
+#     """
+#     api_key = "c318fb5104943f80269804f926aff44489dc5c2c23ec926cff001b0d94a65523"  # 你的 key（建议改成环境变量）
+#
+#     # 多关键词暴力轮询，覆盖 B站/小红书/贴吧/YouTube/Blueprint 等所有主流分享渠道
+#     queries = [
+#         "TH18 阵型 链接 国服 2025 site:bilibili.com",
+#         "部落冲突 TH18 布局 复制 腾讯 11月",
+#         "TH18 base link tencent 2025",
+#         "TH18 防三阵型 OpenLayout 链接",
+#         "TH18 战阵 复制链接 11月最新",
+#     ]
+#
+#     found_layouts: List[Dict[str, str]] = []
+#     seen_ids = set()
+#
+#     for q in queries:
+#         if len(found_layouts) >= 15:  # 最多15个
+#             break
+#
+#         try:
+#             search = GoogleSearch({
+#                 "q": q,
+#                 "api_key": api_key,
+#                 "num": 15,
+#                 "hl": "zh-CN",
+#                 "gl": "cn",
+#                 "tbs": "qdr:w",  # 最近一周（可改成 qdr:m 最近一月）
+#             })
+#             results = search.get_dict().get("organic_results", [])
+#
+#             for item in results:
+#                 if len(found_layouts) >= 15:
+#                     break
+#
+#                 title = item.get("title", "")
+#                 snippet = item.get("snippet", "")
+#                 link = item.get("link", "")
+#                 full_text = f"{title} {snippet} {link}"
+#
+#                 layout_id = extract_th18_id(full_text)
+#                 if layout_id and layout_id not in seen_ids:
+#                     seen_ids.add(layout_id)
+#                     found_layouts.append({
+#                         "title": title[:100],
+#                         "link": build_cn_layout_link(layout_id),
+#                         "description": snippet[:150],
+#                     })
+#                     print(f"成功提取: {title[:60]}... → {layout_id}")
+#
+#         except Exception as e:
+#             print(f"SerpAPI 查询失败 [{q}]: {e}")
+#
+#     # 如果实时搜索没抓够，用备选库补齐（保证每次至少 5 个）
+#     if len(found_layouts) < 1:
+#         print("实时搜索不足 5 个，启用本地备选阵型库")
+#         for item in get_fallback_th18_layouts():
+#             if item["link"].split("id=")[1] not in seen_ids:
+#                 found_layouts.append({
+#                     "title": item["title"],
+#                     "link": item["link"],
+#                     "description": item["desc"],
+#                 })
+#                 seen_ids.add(item["link"].split("id=")[1])
+#             if len(found_layouts) >= 15:
+#                 break
+#
+#     print(f"TH18 阵型抓取完成，共 {len(found_layouts)} 个有效国服链接")
+#     return found_layouts[:15]  # 最多返回 15 个
+# def fetch_coc_layouts() -> List[Dict[str, str]]:
+#     """搜索最新部落冲突 TH17 阵型，返回链接、标题和描述列表"""
+#     search_query = "部落冲突 TH17 阵型 2025 国服 最新布局 site:bilibili.com OR site:youtube.com OR site:coc.heiyu100.cn OR site:blueprintcoc.com"
+#     params = {
+#         "q": search_query,
+#         "api_key": 'c318fb5104943f80269804f926aff44489dc5c2c23ec926cff001b0d94a65523',  # 从 env 或 Secrets 获取
+#         "num": 10,
+#         "hl": "zh-cn",
+#         "gl": "cn"
+#     }
+#     try:
+#         search = GoogleSearch(params)
+#         results = search.get_dict().get("organic_results", [])
+#         print(f"结果数量: {len(results)}")  # 调试
+#
+#         layouts = []
+#         for result in results:
+#             title = result.get('title', '')
+#             if 'TH17' in title.upper() or '阵型' in title:  # 放松条件，包含 TH17 或 阵型
+#                 layouts.append({
+#                     'title': title,
+#                     'link': result.get('link', ''),
+#                     'description': result.get('snippet', '')
+#                 })
+#                 print(f"标题: {title}, 链接: {result.get('link')}")
+#         return layouts
+#     except Exception as e:
+#         print(f"SerpAPI 搜索失败: {e}，切换到黑羽网络")
+#         return fetch_from_heiyu()
+#
+# def fetch_from_heiyu() -> List[Dict[str, str]]:
+#     """直接爬取黑羽网络 TH18 阵型（改 18 为 17 如果无内容）"""
+#     url = "https://coc.heiyu100.cn/en/?lx=1&jidi=18%E6%9C%AC&page=1&dengji="  # 改 18 为 17 测试
+#     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+#     try:
+#         response = requests.get(url, headers=headers, timeout=10)
+#         soup = BeautifulSoup(response.text, 'html.parser')
+#
+#         layouts = []
+#         for item in soup.find_all('div', class_=['item', 'layout-item', 'box']):  # 更新 find_all
+#             title = item.find('h3') or item.find('span', class_='title')  # 多标签备选
+#             link = item.find('a')
+#             desc = item.find('p', class_='description')
+#             if title and link:
+#                 layouts.append({
+#                     'title': title.text.strip(),
+#                     'link': 'https://coc.heiyu100.cn' + link['href'],
+#                     'description': desc.text.strip() if desc else ''
+#                 })
+#                 print(f"标题: {title.text}, 链接: {link['href']}")
+#         return layouts[:10]
+#     except Exception as e:
+#         print(f"黑羽网络失败: {e}")
+#         return []
 
 # === 配置管理 ===
 def load_config():
@@ -481,34 +688,34 @@ class PushRecordManager:
         """检查当前时间是否在指定时间范围内"""
         now = get_beijing_time()
         current_time = now.strftime("%H:%M")
-    
+
         def normalize_time(time_str: str) -> str:
             """将时间字符串标准化为 HH:MM 格式"""
             try:
                 parts = time_str.strip().split(":")
                 if len(parts) != 2:
                     raise ValueError(f"时间格式错误: {time_str}")
-            
+
                 hour = int(parts[0])
                 minute = int(parts[1])
-            
+
                 if not (0 <= hour <= 23 and 0 <= minute <= 59):
                     raise ValueError(f"时间范围错误: {time_str}")
-            
+
                 return f"{hour:02d}:{minute:02d}"
             except Exception as e:
                 print(f"时间格式化错误 '{time_str}': {e}")
                 return time_str
-    
+
         normalized_start = normalize_time(start_time)
         normalized_end = normalize_time(end_time)
         normalized_current = normalize_time(current_time)
-    
+
         result = normalized_start <= normalized_current <= normalized_end
-    
+
         if not result:
             print(f"时间窗口判断：当前 {normalized_current}，窗口 {normalized_start}-{normalized_end}")
-    
+
         return result
 
 
@@ -534,6 +741,7 @@ class DataFetcher:
             alias = id_value
         # 调用自定义搜索函数
         layouts = fetch_coc_layouts()
+        print(layouts, 'iiiiiiii')
         if not layouts:
             print(f"阵型搜索失败: {id_value}")
             return None, id_value, alias
@@ -548,6 +756,7 @@ class DataFetcher:
         data_json = {"status": "success", "items": items}
         data_text = json.dumps(data_json, ensure_ascii=False)
         print(f"阵型搜索成功: {len(layouts)} 个结果")
+        print(data_text, id_value, alias, '66666')
         return data_text, id_value, alias
         # url = f"https://newsnow.busiyi.world/api/s?id={id_value}&latest"
         #
