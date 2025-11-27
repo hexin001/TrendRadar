@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from bs4 import BeautifulSoup
 # from serpapi import GoogleSearch  # 新导入
-from google_search_results import GoogleSearch
+# from google_search_results import GoogleSearch
 # from serpapi.google_search import GoogleSearch
+from googlesearch import search
+
 import pytz
 import requests
 import yaml
@@ -116,6 +118,7 @@ def fetch_coc_layouts() -> list[dict[str, str]]:
     {"status": "success", "items": [{"title": "...", "url": "https://link.clashofclans.com/...", "mobileUrl": "https://link.clashofclans.com/..."}, ...]}
     """
     # 多关键词暴力轮询，覆盖 B站/小红书/贴吧/YouTube/Blueprint 等所有主流分享渠道
+    # global search
     queries = [
         "TH18 阵型 链接 国服 2025 site:bilibili.com",
         "部落冲突 TH18 布局 复制 腾讯 11月",
@@ -132,7 +135,7 @@ def fetch_coc_layouts() -> list[dict[str, str]]:
             break
 
         try:
-            search = GoogleSearch({
+            search = googlesearch({
                 "q": q,
                 "api_key": api_key,
                 "num": 15,
