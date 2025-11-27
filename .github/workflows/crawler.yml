@@ -26,13 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-search-results  # <--- 必须添加这一行
           pip install -r requirements.txt
-          # 验证包是否安装成功（关键！）
-          pip show google-search-results  # 会显示包信息，确认安装成功
-          # 提前验证导入（避免运行脚本时报错）
-          python -c "from google_search_results import GoogleSearch; print('✅ 导入GoogleSearch成功！')"
-
           # 手动安装方式：补充 serpapi
 #          pip install beautifulsoup4 requests pytz pyyaml serpapi
 
